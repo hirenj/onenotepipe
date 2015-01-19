@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 
 import keyring
-import getpass
 import ConfigParser
-import tempfile,os,sys
-from datetime import datetime
+import os,sys
 from onedrive.api_v5 import OneDriveAuth
 import signal
 import BaseHTTPServer
@@ -19,9 +17,6 @@ import collections
 from StringIO import StringIO
 import string
 import random
-import itertools as it
-
-import sys
 
 from optparse import OptionParser
 
@@ -63,7 +58,7 @@ signal.signal(signal.SIGINT, signal_handler)
 def main():
     parser = OptionParser()
     parser.add_option("-c", "--command", dest="command",
-                      help="run COMMAND", metavar="COMMAND")
+                      help="run COMMAND (login / notebooks / sections / upload)", metavar="COMMAND")
     parser.add_option("-n", "--notebook", dest="notebook",
                       help="Specify notebook")
     parser.add_option("-s", "--section", dest="section", help="Specify section")
@@ -108,7 +103,7 @@ def read_html(filename):
     elements_to_read = tree.xpath('//img[not(starts-with(@src, "http"))]') + tree.xpath('//object[starts-with(@data, "file://")]')
     to_attach = []
     if not elements_to_read:
-        return(values,none)
+        return(values,None)
     for external in elements_to_read:
         part_id = id_generator()
         filename = None
