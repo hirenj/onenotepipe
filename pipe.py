@@ -48,6 +48,7 @@ class AuthHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             s.wfile.write("</body></html>")
 
 def signal_handler(signal, frame):
+        global interrupted
         print >> sys.stderr, 'Onenote pipe: Aborting'
         interrupted = True
         sys.exit(0)
@@ -103,7 +104,7 @@ def read_html(filename):
     elements_to_read = tree.xpath('//img[not(starts-with(@src, "http"))]') + tree.xpath('//object[starts-with(@data, "file://")]')
     to_attach = []
     if not elements_to_read:
-        return(values,None)
+        return (values,None)
     for external in elements_to_read:
         part_id = id_generator()
         filename = None
