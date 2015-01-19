@@ -4,9 +4,6 @@ import keyring
 import getpass
 import ConfigParser
 import tempfile,os,sys
-import xattr
-import iso8601
-import calendar
 from datetime import datetime
 from onedrive.api_v5 import OneDriveAuth
 import signal
@@ -14,8 +11,6 @@ import BaseHTTPServer
 import functools as ft
 import urllib
 import urlparse
-import json
-import types
 import lxml
 import lxml.html
 from lxml import etree
@@ -24,6 +19,7 @@ import collections
 from StringIO import StringIO
 import string
 import random
+import itertools as it
 
 import sys
 
@@ -45,15 +41,16 @@ class AuthHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     def do_GET(s):
         global auth_code
         global KEEP_RUNNING
-        KEEP_RUNNING = False
         """Respond to a GET request."""
-        s.send_response(200)
-        s.send_header("Content-type", "text/html")
-        s.end_headers()
-        s.wfile.write("<html><head><title>Authorization successful</title></head>")
-        s.wfile.write("<body><p>Successfully authorized</p>")
-        auth_code = s.path
-        s.wfile.write("</body></html>")
+        KEEP_RUNNING = False
+        if ('code' in s.path):
+            s.send_response(200)
+            s.send_header("Content-type", "text/html")
+            s.end_headers()
+            s.wfile.write("<html><head><title>Authorization successful</title></head>")
+            s.wfile.write("<body><p>Successfully authorized</p>")
+            auth_code = s.path
+            s.wfile.write("</body></html>")
 
 def signal_handler(signal, frame):
         print >> sys.stderr, 'Onenote pipe: Aborting'
@@ -135,7 +132,7 @@ def write_page(client,notebook_name,section_name,filename):
     datas = client.do_request(url='notebooks', query={'filter' : "name eq \'%s\'" % notebook_name, 'select' : "id" })['value']
     if datas:
         notebook_id = datas[0]['id']
-        datas = client.do_request(url='notebooks/%s/sections' % notebook_id, query={'select' : 'id'} )['value']
+        datas = client.do_request(url='notebooks/%s/sections' % notebook_id, query={'filter' : "name eq \'%s\'" % section_name, 'select' : 'id'} )['value']
         if datas:
             section_id = datas[0]['id']
     if notebook_id and section_id:
@@ -210,7 +207,10 @@ def get_client(force=False):
     client_id = config.get('onenote','client_id')
     client_secret = config.get('onenote','client_secret')
 
-    client = OneDrive(client_id=client_id,client_secret=client_secret,auth_redirect_uri='http://ronenote.localtest.me:8000', auth_scope=('office.onenote_create','office.onenote_update','wl.offline_access'))
+    client = OneDrive(client_id=client_id,client_secret=client_secret,auth_redirect_uri='http://hirenjonenote.localtest.me:8000', auth_scope=('office.onenote_create','office.onenote_update','wl.offline_access'))
+
+    if os.name == 'nt':
+        client.request_extra_keywords = { 'verify' : False }
 
     refresh_token = keyring.get_password('onenote','refresh_token')
 
