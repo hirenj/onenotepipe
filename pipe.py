@@ -17,6 +17,7 @@ import collections
 from StringIO import StringIO
 import string
 import random
+import logging
 
 from optparse import OptionParser
 
@@ -24,6 +25,12 @@ global interrupted
 interrupted = False
 
 auth_code = None
+def enable_logging():
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.DEBUG)
+    requests_log = logging.getLogger("requests.packages.urllib3")
+    requests_log.setLevel(logging.DEBUG)
+    requests_log.propagate = True
 
 class AuthenticationError(Exception):
     pass
@@ -59,10 +66,11 @@ signal.signal(signal.SIGINT, signal_handler)
 def main():
     parser = OptionParser()
     parser.add_option("-c", "--command", dest="command",
-                      help="run COMMAND (login / notebooks / sections / upload)", metavar="COMMAND")
+                      help="run COMMAND (login / notebooks / sections / upload / download )", metavar="COMMAND")
     parser.add_option("-n", "--notebook", dest="notebook",
                       help="Specify notebook")
     parser.add_option("-s", "--section", dest="section", help="Specify section")
+    parser.add_option("-p", "--page", dest="page", help="Specify page")
     parser.add_option("-f", "--filename", dest="filename", help="HTML file to read")
     parser.add_option("-q", "--quiet",
                       action="store_false", dest="verbose", default=True,
@@ -71,6 +79,9 @@ def main():
     (options, args) = parser.parse_args()
     global verbose
     verbose = options.verbose
+
+    if (verbose):
+        enable_logging()
 
     client = get_client()
     if options.command == "login":
@@ -81,6 +92,8 @@ def main():
         get_sections(client,options.notebook)
     if options.command == "upload" :
         write_page(client,options.notebook,options.section,options.filename)
+    if options.command == "download" :
+        read_page(client,options.notebook,options.section,options.page)
 
 def get_notebooks(client):
     datas = client.do_request(url='notebooks', query={'select' : 'name'})['value']
@@ -123,15 +136,49 @@ def read_html(filename):
 
     return ('<?xml version="1.0" encoding="utf-8" ?>'+lxml.html.tostring(tree),files)
 
-def write_page(client,notebook_name,section_name,filename):
-    (html,files) = read_html(filename)
+def get_notebook_id(client,notebook_name):
     datas = client.do_request(url='notebooks', query={'filter' : "name eq \'%s\'" % notebook_name, 'select' : "id" })['value']
     if datas:
-        notebook_id = datas[0]['id']
-        datas = client.do_request(url='notebooks/%s/sections' % notebook_id, query={'filter' : "name eq \'%s\'" % section_name, 'select' : 'id'} )['value']
-        if datas:
-            section_id = datas[0]['id']
-    if notebook_id and section_id:
+        return(datas[0]['id'])
+    return None
+
+def get_section_id(client,notebook_name,section_name):
+    notebook_id = get_notebook_id(client,notebook_name)
+    print notebook_id
+    if notebook_id is None:
+        return None
+
+    datas = client.do_request(url='notebooks/%s/sections' % notebook_id, query={'filter' : "name eq \'%s\'" % section_name, 'select' : 'id'} )['value']
+    if datas:
+        return(datas[0]['id'])
+
+    return None
+
+def get_page_id(client,notebook_name,section_name,page_name):
+    section_id = get_section_id(client,notebook_name,section_name)
+    if section_id is None:
+        return None
+
+    datas = client.do_request(url='sections/%s/pages' % section_id, query={'filter' : "title eq \'%s\'" % page_name, 'select' : 'id' } )['value']
+    if datas:
+        return(datas[0]['id'])
+
+    return None
+
+
+def read_page(client,notebook_name,section_name,page_name):
+    page_id = get_page_id(client,notebook_name,section_name,page_name)
+    if page_id is None:
+        return None
+    datas = client.do_request('pages/%s/content' % page_id, raw=True)
+    if datas:
+        write_html(client,datas)
+
+
+def write_page(client,notebook_name,section_name,filename):
+    (html,files) = read_html(filename)
+    section_id = get_section_id(client,notebook_name,section_name)
+    if section_id:
         if (files):
             print "Sending file attachments"
             datas = client.do_request('sections/%s/pages' % section_id, method='post', files=files )
@@ -139,9 +186,28 @@ def write_page(client,notebook_name,section_name,filename):
             datas = client.do_request('sections/%s/pages' % section_id,data = html, method='post', headers = { 'Content-Type': 'application/xhtml+xml' })
         print datas
 
+def write_html(xml_string):
+    tree = etree.fromstring(xml_string)
+    elements_to_download = tree.xpath('//img[@src]') + tree.xpath('//object[starts-with(@data, "https://")]')
+    if not elements_to_read:
+        return (None)
+    for external in elements_to_read:
+        part_id = id_generator()
+        if external.tag == 'img':
+            client.do_request(external.get('data-fullres-src'))
+            client.do_request(external.get('src'))
+            external.src = 'images/%s' % part_id
+        if external.tag == 'object':
+            external.get('type') # mime type here
+            external.get('data-attachment') # Attachment name here
+            client.do_request(external.get('data'))
+
+        to_attach.append( ( part_id, filename.replace('file://','') ) )
+
+
 class OneDrive(OneDriveAuth):
 
-    api_url_base = 'https://www.onenote.com/api/v1.0/'
+    api_url_base = 'https://www.onenote.com/api/v1.0/me/notes/'
 
     def _api_url(self, path, query=dict(),
                  pass_access_token=True, pass_empty_values=False):
@@ -157,7 +223,7 @@ class OneDrive(OneDriveAuth):
                         'Empty key {!r} for API call (path: {})'
                         .format(k, path))
 
-        return urlparse.urljoin(self.api_url_base,
+        return urlparse.urljoin(path.startsWith('http') ? '' : self.api_url_base,
                                 '{}?{}'.format(path, urllib.urlencode(query)))
 
     def do_request(self, url='notebooks', query=dict(), query_filter=True, auth_header=True, auto_refresh_token=True, **request_kwz):
