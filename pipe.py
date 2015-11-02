@@ -232,7 +232,7 @@ def write_html(client,xml_string,filename):
             outfile =  os.path.join( filename_base + '_attachments/', external.get('data-attachment') + extension)
             data = client.do_request(external.get('data'),raw=True)
             write_image(data,outfile)
-            external.set('data' , 'file://'+outfile)
+            external.set('data' , 'file://'+os.path.abspath(outfile))
 
     ET.ElementTree(tree).write(filename,method="html")
 
