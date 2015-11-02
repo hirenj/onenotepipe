@@ -12,14 +12,19 @@ import urlparse
 import lxml
 import lxml.html
 from lxml import etree
+import xml.etree.ElementTree as ET
 import mimetypes
 import collections
 from StringIO import StringIO
 import string
 import random
 import logging
+import re
+import base64
 
 from optparse import OptionParser
+
+from pdb import set_trace as bp
 
 global interrupted
 interrupted = False
@@ -71,16 +76,16 @@ def main():
                       help="Specify notebook")
     parser.add_option("-s", "--section", dest="section", help="Specify section")
     parser.add_option("-p", "--page", dest="page", help="Specify page")
-    parser.add_option("-f", "--filename", dest="filename", help="HTML file to read")
-    parser.add_option("-q", "--quiet",
-                      action="store_false", dest="verbose", default=True,
-                      help="don't print status messages to stdout")
+    parser.add_option("-f", "--filename", dest="filename", help="HTML file to read / write")
+    parser.add_option("-v", "--verbose",
+                      action="count", dest="verbose", default=0,
+                      help="Print status messages to stdout")
 
     (options, args) = parser.parse_args()
     global verbose
     verbose = options.verbose
 
-    if (verbose):
+    if (verbose > 2):
         enable_logging()
 
     client = get_client()
@@ -93,7 +98,7 @@ def main():
     if options.command == "upload" :
         write_page(client,options.notebook,options.section,options.filename)
     if options.command == "download" :
-        read_page(client,options.notebook,options.section,options.page)
+        read_page(client,options.notebook,options.section,options.page,options.filename)
 
 def get_notebooks(client):
     datas = client.do_request(url='notebooks', query={'select' : 'name'})['value']
@@ -144,7 +149,6 @@ def get_notebook_id(client,notebook_name):
 
 def get_section_id(client,notebook_name,section_name):
     notebook_id = get_notebook_id(client,notebook_name)
-    print notebook_id
     if notebook_id is None:
         return None
 
@@ -166,13 +170,13 @@ def get_page_id(client,notebook_name,section_name,page_name):
     return None
 
 
-def read_page(client,notebook_name,section_name,page_name):
+def read_page(client,notebook_name,section_name,page_name,filename):
     page_id = get_page_id(client,notebook_name,section_name,page_name)
     if page_id is None:
         return None
     datas = client.do_request('pages/%s/content' % page_id, raw=True)
     if datas:
-        write_html(client,datas)
+        write_html(client,datas,filename)
 
 
 def write_page(client,notebook_name,section_name,filename):
@@ -186,23 +190,51 @@ def write_page(client,notebook_name,section_name,filename):
             datas = client.do_request('sections/%s/pages' % section_id,data = html, method='post', headers = { 'Content-Type': 'application/xhtml+xml' })
         print datas
 
-def write_html(xml_string):
-    tree = etree.fromstring(xml_string)
+
+def serialise_html(xml_string,filename):
+    with open(filename, "w") as text_file:
+        text_file.write(xml_string)
+
+def write_image(image_data,filename):
+    with open(filename, "w") as image_file:
+        image_file.write(image_data)
+
+def strip_ns(xml_string):
+    return re.sub('xmlns="[^"]+"', '', xml_string)
+
+def write_html(client,xml_string,filename):
+    tree = etree.fromstring(strip_ns(xml_string))
     elements_to_download = tree.xpath('//img[@src]') + tree.xpath('//object[starts-with(@data, "https://")]')
-    if not elements_to_read:
-        return (None)
-    for external in elements_to_read:
+    if not elements_to_download:
+        return serialise_html(xml_string,filename)
+
+    serialise_html(xml_string,filename)
+
+    filename_base = os.path.splitext(filename)[0]
+
+    for external in elements_to_download:
         part_id = id_generator()
         if external.tag == 'img':
-            client.do_request(external.get('data-fullres-src'))
-            client.do_request(external.get('src'))
-            external.src = 'images/%s' % part_id
+            if not os.path.exists(filename_base + '_images/'):
+                os.makedirs(filename_base + '_images/')
+            data = client.do_request(external.get('data-fullres-src'),raw=True)
+            outfile =  os.path.join( filename_base + '_images/', part_id + mimetypes.guess_extension(external.get('data-src-type')))
+            write_image(data,outfile)
+            data = client.do_request(external.get('src'),raw=True)
+            encoded = base64.b64encode(data)
+            external.set('src', 'data:'+external.get('data-src-type')+';base64,'+encoded)
         if external.tag == 'object':
-            external.get('type') # mime type here
-            external.get('data-attachment') # Attachment name here
-            client.do_request(external.get('data'))
+            if not os.path.exists(filename_base + '_attachments/'):
+                os.makedirs(filename_base + '_attachments/')
+            extension = mimetypes.guess_extension(external.get('type'))
+            if ( external.get('type') == 'application/vnd.ms-excel' ):
+                extension = ''
+            outfile =  os.path.join( filename_base + '_attachments/', external.get('data-attachment') + extension)
+            data = client.do_request(external.get('data'),raw=True)
+            write_image(data,outfile)
+            external.set('data' , 'file://'+outfile)
 
-        to_attach.append( ( part_id, filename.replace('file://','') ) )
+    ET.ElementTree(tree).write(filename,method="html")
 
 
 class OneDrive(OneDriveAuth):
@@ -222,8 +254,11 @@ class OneDrive(OneDriveAuth):
                     raise AuthenticationError(
                         'Empty key {!r} for API call (path: {})'
                         .format(k, path))
+        path_start = self.api_url_base
 
-        return urlparse.urljoin(path.startsWith('http') ? '' : self.api_url_base,
+        if path.startswith('http'):
+            path_start = ''
+        return urlparse.urljoin(path_start,
                                 '{}?{}'.format(path, urllib.urlencode(query)))
 
     def do_request(self, url='notebooks', query=dict(), query_filter=True, auth_header=True, auto_refresh_token=True, **request_kwz):
